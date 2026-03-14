@@ -4,6 +4,8 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt } from "./writer-prompts.js";
 import { readGenreProfile, readBookRules } from "./rules-reader.js";
+import { validatePostWrite } from "./post-write-validator.js";
+import { analyzeAITells } from "./ai-tells.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -43,6 +45,7 @@ export class WriterAgent extends BaseAgent {
     const [
       storyBible, volumeOutline, styleGuide, currentState, ledger, hooks,
       chapterSummaries, subplotBoard, emotionalArcs, characterMatrix, styleProfileRaw,
+      parentCanon,
     ] = await Promise.all([
         this.readFileOrDefault(join(bookDir, "story/story_bible.md")),
         this.readFileOrDefault(join(bookDir, "story/volume_outline.md")),
@@ -55,6 +58,7 @@ export class WriterAgent extends BaseAgent {
         this.readFileOrDefault(join(bookDir, "story/emotional_arcs.md")),
         this.readFileOrDefault(join(bookDir, "story/character_matrix.md")),
         this.readFileOrDefault(join(bookDir, "story/style_profile.json")),
+        this.readFileOrDefault(join(bookDir, "story/parent_canon.md")),
       ]);
 
     const recentChapters = await this.loadRecentChapters(bookDir, chapterNumber);
@@ -70,10 +74,13 @@ export class WriterAgent extends BaseAgent {
 
     const systemPrompt = buildWriterSystemPrompt(
       book, genreProfile, bookRules, bookRulesBody, genreBody, styleGuide, styleFingerprint,
+      chapterNumber,
     );
 
     const dialogueFingerprints = this.extractDialogueFingerprints(recentChapters, storyBible);
     const relevantSummaries = this.findRelevantSummaries(chapterSummaries, volumeOutline, chapterNumber);
+
+    const hasParentCanon = parentCanon !== "(文件尚未创建)";
 
     const userPrompt = this.buildUserPrompt({
       chapterNumber,
@@ -91,6 +98,7 @@ export class WriterAgent extends BaseAgent {
       characterMatrix,
       dialogueFingerprints,
       relevantSummaries,
+      parentCanon: hasParentCanon ? parentCanon : undefined,
     });
 
     const temperature = input.temperatureOverride ?? 0.7;
@@ -105,12 +113,27 @@ export class WriterAgent extends BaseAgent {
 
     const output = this.parseOutput(chapterNumber, response.content, genreProfile);
 
-    // #4: Post-write constraint validation (regex-based, zero cost)
-    const violations = this.validateConstraints(output.content, bookRules);
-    if (violations.length > 0) {
+    // #4: Post-write validation (regex + rule-based, zero LLM cost)
+    const ruleViolations = validatePostWrite(output.content, genreProfile, bookRules);
+    const aiTellIssues = analyzeAITells(output.content).issues;
+
+    if (ruleViolations.length > 0) {
+      const errors = ruleViolations.filter(v => v.severity === "error");
+      const warnings = ruleViolations.filter(v => v.severity === "warning");
       process.stderr.write(
-        `[writer] Constraint violations in chapter ${chapterNumber}: ${violations.join("; ")}\n`,
+        `[writer] Post-write: ${errors.length} errors, ${warnings.length} warnings in chapter ${chapterNumber}\n`,
       );
+      for (const v of ruleViolations) {
+        process.stderr.write(`  [${v.severity}] ${v.rule}: ${v.description}\n`);
+      }
+    }
+    if (aiTellIssues.length > 0) {
+      process.stderr.write(
+        `[writer] AI-tell check: ${aiTellIssues.length} issues in chapter ${chapterNumber}\n`,
+      );
+      for (const issue of aiTellIssues) {
+        process.stderr.write(`  [${issue.severity}] ${issue.category}: ${issue.description}\n`);
+      }
     }
 
     return output;
@@ -165,6 +188,7 @@ export class WriterAgent extends BaseAgent {
     readonly characterMatrix: string;
     readonly dialogueFingerprints?: string;
     readonly relevantSummaries?: string;
+    readonly parentCanon?: string;
   }): string {
     const contextBlock = params.externalContext
       ? `\n## 外部指令\n以下是来自外部系统的创作指令，请在本章中融入：\n\n${params.externalContext}\n`
@@ -198,6 +222,12 @@ export class WriterAgent extends BaseAgent {
       ? `\n## 相关历史章节摘要\n${params.relevantSummaries}\n`
       : "";
 
+    const canonBlock = params.parentCanon
+      ? `\n## 正传正典参照（番外写作专用）
+本书是番外作品。以下正典约束不可违反，角色不得引用超出其信息边界的信息。
+${params.parentCanon}\n`
+      : "";
+
     return `请续写第${params.chapterNumber}章。
 ${contextBlock}
 ## 当前状态卡
@@ -205,7 +235,7 @@ ${params.currentState}
 ${ledgerBlock}
 ## 伏笔池
 ${params.hooks}
-${summariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${fingerprintBlock}${relevantBlock}
+${summariesBlock}${subplotBlock}${emotionalBlock}${matrixBlock}${fingerprintBlock}${relevantBlock}${canonBlock}
 ## 最近章节
 ${params.recentChapters || "(这是第一章，无前文)"}
 
@@ -357,30 +387,6 @@ ${params.volumeOutline}
     }
   }
 
-  /** Validate hard constraints against content. Returns list of violation descriptions. */
-  private validateConstraints(content: string, bookRules: BookRules | null): ReadonlyArray<string> {
-    const violations: string[] = [];
-
-    // Built-in hard constraints from writer-prompts
-    if (/不是[^，。！？\n]{0,30}[，,]?\s*而是/.test(content)) {
-      violations.push("硬性禁令：出现了「不是……而是……」句式");
-    }
-    if (content.includes("——")) {
-      violations.push("硬性禁令：出现了破折号「——」");
-    }
-
-    // Book-level prohibitions (check as substring)
-    if (bookRules?.prohibitions) {
-      for (const prohibition of bookRules.prohibitions) {
-        // Only check short prohibitions as literal patterns (long ones are descriptive)
-        if (prohibition.length <= 15 && content.includes(prohibition)) {
-          violations.push(`本书禁忌：出现了"${prohibition}"`);
-        }
-      }
-    }
-
-    return violations;
-  }
 
   /**
    * Extract dialogue fingerprints from recent chapters.
