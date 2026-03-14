@@ -1,6 +1,6 @@
 import { Command } from "commander";
-import { StateManager, analyzeStyle } from "@actalk/inkos-core";
-import { findProjectRoot, resolveBookId, log, logError } from "../utils.js";
+import { StateManager, analyzeStyle, PipelineRunner } from "@actalk/inkos-core";
+import { loadConfig, createClient, findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -43,10 +43,12 @@ styleCommand
 
 styleCommand
   .command("import")
-  .description("Import a style profile into a book")
+  .description("Import style profile + generate style guide (LLM) into a book")
   .argument("<file>", "Text file to analyze and import")
   .argument("[book-id]", "Book ID (auto-detected if only one book)")
   .option("--name <name>", "Source name for the profile")
+  .option("--stats-only", "Only save statistical profile, skip LLM style guide generation")
+  .option("--json", "Output JSON")
   .action(async (file: string, bookIdArg: string | undefined, opts) => {
     try {
       const root = findProjectRoot();
@@ -65,10 +67,38 @@ styleCommand
         "utf-8",
       );
 
-      log(`Style profile imported to "${bookId}" from "${file}"`);
-      log(`  Avg sentence: ${profile.avgSentenceLength} chars, TTR: ${profile.vocabularyDiversity}`);
+      if (!opts.json) log(`Statistical profile saved (TTR: ${profile.vocabularyDiversity})`);
+
+      // LLM-powered style guide generation
+      if (!opts.statsOnly) {
+        if (!opts.json) log("Generating qualitative style guide via LLM...");
+        const config = await loadConfig();
+        const client = createClient(config);
+        const pipeline = new PipelineRunner({
+          client,
+          model: config.llm.model,
+          projectRoot: root,
+        });
+        await pipeline.generateStyleGuide(bookId, text);
+        if (!opts.json) log("Style guide (style_guide.md) generated.");
+      }
+
+      if (opts.json) {
+        log(JSON.stringify({
+          bookId,
+          file,
+          statsProfile: `story/style_profile.json`,
+          styleGuide: opts.statsOnly ? null : `story/style_guide.md`,
+        }, null, 2));
+      } else {
+        log(`Style imported to "${bookId}" from "${file}"`);
+      }
     } catch (e) {
-      logError(`Import failed: ${e}`);
+      if (opts.json) {
+        log(JSON.stringify({ error: String(e) }));
+      } else {
+        logError(`Import failed: ${e}`);
+      }
       process.exit(1);
     }
   });
