@@ -106,6 +106,53 @@ const TOOLS: ReadonlyArray<ToolDefinition> = [
       required: ["bookId"],
     },
   },
+  {
+    name: "web_search",
+    description: "搜索互联网。用于查找题材相关资料、避免套路化、获取灵感。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "搜索关键词" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "web_fetch",
+    description: "抓取指定URL的文本内容。用于读取搜索结果中的详细页面。",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "要抓取的URL" },
+        maxChars: { type: "number", description: "最大返回字符数（默认8000）" },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "import_style",
+    description: "从参考文本生成文风指南（统计 + LLM定性分析）。生成 style_profile.json 和 style_guide.md。",
+    parameters: {
+      type: "object",
+      properties: {
+        bookId: { type: "string", description: "目标书籍ID" },
+        referenceText: { type: "string", description: "参考文本（至少2000字）" },
+      },
+      required: ["bookId", "referenceText"],
+    },
+  },
+  {
+    name: "import_canon",
+    description: "从正传导入正典参照，生成 parent_canon.md，启用番外写作和审计模式。",
+    parameters: {
+      type: "object",
+      properties: {
+        targetBookId: { type: "string", description: "番外书籍ID" },
+        parentBookId: { type: "string", description: "正传书籍ID" },
+      },
+      required: ["targetBookId", "parentBookId"],
+    },
+  },
 ];
 
 export interface AgentLoopOptions {
@@ -142,6 +189,10 @@ export async function runAgentLoop(
 | revise_chapter | 修订章节（支持 polish/rewrite/rework/spot-fix/anti-detect 五种模式） |
 | write_full_pipeline | 完整管线：写 → 审 → 改（如需要） |
 | scan_market | 扫描平台排行榜，分析市场趋势 |
+| web_search | 搜索互联网，获取题材资料或灵感 |
+| web_fetch | 抓取指定URL的文本内容 |
+| import_style | 从参考文本生成文风指南（统计+LLM分析） |
+| import_canon | 从正传导入正典参照，启用番外模式 |
 
 ## 长期记忆
 
@@ -164,7 +215,10 @@ export async function runAgentLoop(
 
 - 用户提供了题材/创意但没说要扫描市场 → 跳过 scan_market，直接 create_book
 - 用户说了书名/bookId → 直接操作，不需要先 list_books
-- 每完成一步，简要汇报进展`,
+- 每完成一步，简要汇报进展
+- 仿写流程：用户提供参考文本 → import_style → 生成 style_guide.md，后续写作自动参照
+- 番外流程：先 create_book 建番外书 → import_canon 导入正传正典 → 然后正常 write_draft
+- web_search 可用于建书前调研题材、查找避免套路化的灵感`,
     },
     { role: "user", content: instruction },
   ];
@@ -192,11 +246,10 @@ export async function runAgentLoop(
 
     // Execute tool calls
     for (const toolCall of result.toolCalls) {
-      const args = JSON.parse(toolCall.arguments) as Record<string, unknown>;
-      options?.onToolCall?.(toolCall.name, args);
-
       let toolResult: string;
       try {
+        const args = JSON.parse(toolCall.arguments) as Record<string, unknown>;
+        options?.onToolCall?.(toolCall.name, args);
         toolResult = await executeTool(pipeline, state, config, toolCall.name, args);
       } catch (e) {
         toolResult = JSON.stringify({ error: String(e) });
@@ -312,6 +365,44 @@ async function executeTool(
         results.push(result);
       }
       return JSON.stringify(results);
+    }
+
+    case "web_search": {
+      const { searchWeb } = await import("../utils/web-search.js");
+      const result = await searchWeb(args.query as string);
+      return JSON.stringify(result);
+    }
+
+    case "web_fetch": {
+      const { fetchUrl } = await import("../utils/web-search.js");
+      const text = await fetchUrl(args.url as string, (args.maxChars as number) ?? 8000);
+      return JSON.stringify({ url: args.url, content: text });
+    }
+
+    case "import_style": {
+      const guide = await pipeline.generateStyleGuide(
+        args.bookId as string,
+        args.referenceText as string,
+      );
+      return JSON.stringify({
+        bookId: args.bookId,
+        statsProfile: "story/style_profile.json",
+        styleGuide: "story/style_guide.md",
+        guidePreview: guide.slice(0, 500),
+      });
+    }
+
+    case "import_canon": {
+      const canon = await pipeline.importCanon(
+        args.targetBookId as string,
+        args.parentBookId as string,
+      );
+      return JSON.stringify({
+        targetBookId: args.targetBookId,
+        parentBookId: args.parentBookId,
+        output: "story/parent_canon.md",
+        canonPreview: canon.slice(0, 500),
+      });
     }
 
     default:
