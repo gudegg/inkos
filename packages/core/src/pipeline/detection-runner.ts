@@ -97,6 +97,7 @@ export async function detectAndRewrite(
       }],
       "anti-detect",
       genre,
+      undefined,
     );
 
     if (reviseOutput.revisedContent.length === 0) break;

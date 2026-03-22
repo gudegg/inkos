@@ -249,6 +249,7 @@ describe("PipelineRunner", () => {
 
     expect(reviseChapter).toHaveBeenCalledTimes(2);
     expect(reviseChapter.mock.calls[1]?.[1]).toBe("After first fix.");
+    expect(reviseChapter.mock.calls[0]?.[6]).toBe(3000);
 
     await rm(root, { recursive: true, force: true });
   });

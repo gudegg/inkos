@@ -7,6 +7,7 @@
 
 import type { BookRules } from "../models/book-rules.js";
 import type { GenreProfile } from "../models/genre-profile.js";
+import { countChapterUnits, resolveChapterLengthRange } from "../utils/chapter-length.js";
 
 export interface PostWriteViolation {
   readonly rule: string;
@@ -52,6 +53,7 @@ export function validatePostWrite(
   content: string,
   genreProfile: GenreProfile,
   bookRules: BookRules | null,
+  targetWordCount?: number,
 ): ReadonlyArray<PostWriteViolation> {
   const violations: PostWriteViolation[] = [];
 
@@ -59,7 +61,24 @@ export function validatePostWrite(
   const isEnglish = genreProfile.language === "en";
   if (isEnglish) {
     // For English, only run book-specific prohibitions and paragraph length check
-    return validatePostWriteEnglish(content, genreProfile, bookRules);
+    return validatePostWriteEnglish(content, genreProfile, bookRules, targetWordCount);
+  }
+
+  if (targetWordCount) {
+    const actualCount = countChapterUnits(content, "zh");
+    const { min, max } = resolveChapterLengthRange(targetWordCount);
+    if (actualCount < min || actualCount > max) {
+      const direction = actualCount < min ? "偏短" : "超长";
+      const suggestion = actualCount < min
+        ? `补足关键场景与有效推进，把正文扩写到 ${min}-${max} 字区间`
+        : `删去重复心理、重复说明和无效铺陈，把正文压回 ${min}-${max} 字区间`;
+      violations.push({
+        rule: "章节字数",
+        severity: "error",
+        description: `正文${direction}：当前约${actualCount}字，目标${targetWordCount}字，允许区间${min}-${max}字`,
+        suggestion,
+      });
+    }
   }
 
   // 1. 硬性禁令: "不是…而是…" 句式
@@ -249,8 +268,26 @@ function validatePostWriteEnglish(
   content: string,
   genreProfile: GenreProfile,
   bookRules: BookRules | null,
+  targetWordCount?: number,
 ): ReadonlyArray<PostWriteViolation> {
   const violations: PostWriteViolation[] = [];
+
+  if (targetWordCount) {
+    const actualCount = countChapterUnits(content, "en");
+    const { min, max } = resolveChapterLengthRange(targetWordCount);
+    if (actualCount < min || actualCount > max) {
+      const direction = actualCount < min ? "too short" : "too long";
+      const suggestion = actualCount < min
+        ? `Expand the missing beats and return to the ${min}-${max} word range`
+        : `Trim repetitive exposition and return to the ${min}-${max} word range`;
+      violations.push({
+        rule: "Chapter length",
+        severity: "error",
+        description: `Chapter is ${direction}: ${actualCount} words, target ${targetWordCount}, allowed range ${min}-${max}`,
+        suggestion,
+      });
+    }
+  }
 
   // 1. AI-tell word density (from en-prompt-sections IRON LAW 3)
   const aiTellWords = ["delve", "tapestry", "testament", "intricate", "pivotal", "vibrant", "embark", "comprehensive", "nuanced"];

@@ -12,6 +12,7 @@ import { filterHooks, filterSummaries, filterSubplots, filterEmotionalArcs, filt
 import { parseCreativeOutput } from "./writer-parser.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { resolveChapterLengthRange } from "../utils/chapter-length.js";
 
 export interface WriteChapterInput {
   readonly book: BookConfig;
@@ -177,7 +178,8 @@ export class WriterAgent extends BaseAgent {
     const settleUsage = settleResult.usage;
 
     // ── Post-write validation (regex + rule-based, zero LLM cost) ──
-    const ruleViolations = validatePostWrite(creative.content, genreProfile, bookRules);
+    const targetWordCount = input.wordCountOverride ?? book.chapterWordCount;
+    const ruleViolations = validatePostWrite(creative.content, genreProfile, bookRules, targetWordCount);
     const aiTellIssues = analyzeAITells(creative.content).issues;
 
     const postWriteErrors = ruleViolations.filter(v => v.severity === "error");
@@ -374,6 +376,7 @@ ${params.parentCanon}\n`
       : "";
 
     if (params.language === "en") {
+      const { min, max } = resolveChapterLengthRange(params.wordCount);
       return `Write chapter ${params.chapterNumber}.
 ${contextBlock}
 ## Current State
@@ -398,11 +401,14 @@ ${params.volumeOutline}
 - PRE_WRITE_CHECK must identify which outline node this chapter covers.
 
 Requirements:
-- Chapter body must be at least ${params.wordCount} words
+- Target chapter length: ${params.wordCount} words
+- Acceptable chapter length range: ${min}-${max} words
+- If you run long, cut repeated exposition instead of adding more scenes
 - Output PRE_WRITE_CHECK first, then the chapter
 - Output only PRE_WRITE_CHECK, CHAPTER_TITLE, and CHAPTER_CONTENT blocks`;
     }
 
+    const { min, max } = resolveChapterLengthRange(params.wordCount);
     return `请续写第${params.chapterNumber}章。
 ${contextBlock}
 ## 当前状态卡
@@ -427,7 +433,9 @@ ${params.volumeOutline}
 - PRE_WRITE_CHECK中必须明确标注本章对应的卷纲节点
 
 要求：
-- 正文不少于${params.wordCount}字
+- 正文目标${params.wordCount}字
+- 正文允许区间：${min}-${max}字
+- 如果篇幅超了，优先删掉重复心理、重复说明和无效铺陈，不要新增场景
 - 先输出写作自检表，再写正文
 - 只需输出 PRE_WRITE_CHECK、CHAPTER_TITLE、CHAPTER_CONTENT 三个区块`;
   }

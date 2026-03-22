@@ -12,3 +12,5 @@ _tmp_*
 test-project/
 .venv*/
 .gstack/
+.idea
+.spec-workflow

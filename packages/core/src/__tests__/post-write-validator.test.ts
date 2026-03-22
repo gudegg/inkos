@@ -27,6 +27,15 @@ describe("validatePostWrite", () => {
     expect(result).toHaveLength(0);
   });
 
+  it("detects chapter length overflow against target range", () => {
+    const content = "正文".repeat(2100);
+    const result = validatePostWrite(content, baseProfile, null, 1500);
+    const violation = findRule(result, "章节字数");
+    expect(violation).toBeDefined();
+    expect(violation!.severity).toBe("error");
+    expect(violation!.description).toContain("目标1500字");
+  });
+
   it("detects '不是…而是…' pattern", () => {
     const content = "这不是勇气，而是愚蠢。他知道这一点。";
     const result = validatePostWrite(content, baseProfile, null);

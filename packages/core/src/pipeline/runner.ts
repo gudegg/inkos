@@ -409,6 +409,7 @@ export class PipelineRunner {
       const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
       const reviseOutput = await reviser.reviseChapter(
         bookDir, content, targetChapter, auditResult.issues, mode, book.genre,
+        book.chapterWordCount,
       );
 
       if (reviseOutput.revisedContent.length === 0) {
@@ -577,6 +578,7 @@ export class PipelineRunner {
         spotFixIssues,
         "spot-fix",
         book.genre,
+        wordCount ?? book.chapterWordCount,
       );
       totalUsage = PipelineRunner.addUsage(totalUsage, fixResult.tokenUsage);
       if (fixResult.revisedContent.length > 0) {
@@ -618,6 +620,7 @@ export class PipelineRunner {
           auditResult.issues,
           "spot-fix",
           book.genre,
+          wordCount ?? book.chapterWordCount,
         );
         totalUsage = PipelineRunner.addUsage(totalUsage, reviseOutput.tokenUsage);
 
