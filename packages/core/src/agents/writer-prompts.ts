@@ -1,4 +1,5 @@
 import type { BookConfig, FanficMode } from "../models/book.js";
+import type { WritingMode } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildFanficCanonSection, buildCharacterVoiceProfiles, buildFanficModeInstructions } from "./fanfic-prompt-sections.js";
@@ -26,6 +27,7 @@ export function buildWriterSystemPrompt(
   mode: "full" | "creative" = "full",
   fanficContext?: FanficContext,
   languageOverride?: "zh" | "en",
+  writingMode?: WritingMode,
 ): string {
   const isEnglish = (languageOverride ?? genreProfile.language) === "en";
 
@@ -47,6 +49,8 @@ export function buildWriterSystemPrompt(
         fanficContext ? buildFanficCanonSection(fanficContext.fanficCanon, fanficContext.fanficMode) : "",
         fanficContext ? buildCharacterVoiceProfiles(fanficContext.fanficCanon) : "",
         fanficContext ? buildFanficModeInstructions(fanficContext.fanficMode, fanficContext.allowedDeviations) : "",
+        writingMode === "signing" ? buildSigningModeRules(chapterNumber) : "",
+        writingMode === "premiere" ? buildPremiereModeRules(chapterNumber) : "",
         buildEnglishPreWriteChecklist(book, genreProfile),
         outputSection,
       ]
@@ -60,6 +64,8 @@ export function buildWriterSystemPrompt(
         buildEmotionalPacingMethod(),
         buildImmersionTechniques(),
         buildGoldenChaptersRules(chapterNumber),
+        writingMode === "signing" ? buildSigningModeRules(chapterNumber) : "",
+        writingMode === "premiere" ? buildPremiereModeRules(chapterNumber) : "",
         bookRules?.enableFullCastTracking ? buildFullCastTracking() : "",
         buildGenreRules(genreProfile, genreBody),
         buildProtagonistRules(bookRules),
@@ -580,4 +586,92 @@ ${updatedLedger}
 ### 信息边界
 | 角色 | 已知信息 | 未知信息 | 信息来源章 |
 |------|----------|----------|------------|`;
+}
+
+// ---------------------------------------------------------------------------
+// 签约过稿模式（writingMode === "signing"）
+// ---------------------------------------------------------------------------
+
+function buildSigningModeRules(chapterNumber?: number): string {
+  const stageRules: Record<string, string> = {
+    "4-5": "金手指/核心能力的第一次实战应用，必须有可量化的收益",
+    "6-7": "引入一个有脑子的对手，制造真正的威胁和紧迫感",
+    "8-9": "主角面临第一个重大抉择，展现性格深度和行为逻辑",
+    "10": "第一个大爽点必须在本章落地（阶段性胜利/身份揭示/重大收获）——这是编辑和读者的分水岭",
+  };
+
+  let stageBlock = "";
+  if (chapterNumber !== undefined && chapterNumber >= 4 && chapterNumber <= 10) {
+    const matchedRules: string[] = [];
+    for (const [range, rule] of Object.entries(stageRules)) {
+      if (range.includes("-")) {
+        const [lo, hi] = range.split("-").map(Number);
+        if (chapterNumber >= lo! && chapterNumber <= hi!) matchedRules.push(`- 第${chapterNumber}章目标：${rule}`);
+      } else if (chapterNumber === Number(range)) {
+        matchedRules.push(`- 第${chapterNumber}章目标：${rule}`);
+      }
+    }
+    if (matchedRules.length > 0) {
+      stageBlock = `\n### 本章阶段目标\n${matchedRules.join("\n")}`;
+    }
+  }
+
+  return `## 签约过稿模式（已激活）
+
+本书处于签约冲刺阶段。前10章是编辑审核和读者留存的生死线。以下规则叠加在原有规则之上。
+
+### 前300字铁律
+- 每章前300字必须抛出一个让读者产生"然后呢？"的事件
+- 禁止用环境描写、天气描写、背景介绍开场
+- 第一句话必须是动作句或对话句，长度不超过20字
+- 如果是第1章，第一句话的目标是制造好奇心——"为什么？"或"发生了什么？"
+
+### 爽点密度要求
+- 每章至少2个小爽点（打脸、逆袭、获得资源、智斗碾压、身份反差）
+- 每3章至少1个中爽点（阶段性胜利、身份曝光、关系突破）
+- 连续2章压制/虐心后，下一章必须释放（反转、爆发、收获）
+- 虐心段落不超过500字，必须紧接释放或反击
+
+### 章末钩子强化
+- 每章最后200字必须包含以下至少一种钩子：
+  - 悬念型：未解的威胁、新的疑问
+  - 反转型：意外信息、局势逆转
+  - 期待型：角色做出决定、即将行动
+  - 情感型：关系紧张升级或破冰暗示
+- 严禁平淡收尾（如"他闭上眼睛休息""一切归于平静""夜色渐深"）
+${stageBlock}`;
+}
+
+// ---------------------------------------------------------------------------
+// 首秀接流模式（writingMode === "premiere"）
+// ---------------------------------------------------------------------------
+
+function buildPremiereModeRules(_chapterNumber?: number): string {
+  return `## 首秀接流模式（已激活）
+
+本书正在平台首秀推流期。本阶段的唯一目标是最大化完读率。以下规则叠加在原有规则之上。
+
+### 钩子地狱
+- 每500字至少一个微钩子（悬念、反转、新信息、冲突升级）
+- 禁止连续500字以上的纯叙述/描写/铺垫——必须被事件或对话打断
+- 每个场景必须以冲突或悬念开始，不要用环境铺垫进入场景
+
+### 完读率铁律
+- 前300字：必须有强烈的代入感事件（危机、不公、反差、身份冲突）
+- 禁止纯过渡章：即使是铺垫章，也必须包含至少1个爽点和1个悬念
+- 每章结尾必须是最强钩子——让读者"不得不翻下一章"
+- 控制段落长度：每段不超过4行（手机阅读优化），长段落拆开
+- 对话占比不低于40%：对话拉高阅读速度，提升完读率
+
+### 情绪节奏
+- 情绪曲线必须有起伏：低→高→更低→更高
+- 每章至少2-3个情绪转折点（惊讶、愤怒、紧张、释放、得意、危机）
+- 虐心/压制段落不超过500字，必须紧接释放/反击
+- 读者情绪缺口：如果前文积累了压制，本章必须有对应的释放
+
+### 信息投喂节奏
+- 每章至少揭示1个新信息（世界观、角色背景、隐藏关系、金手指新用法）
+- 信息通过事件和对话自然带出，禁止大段灌输
+- 新信息必须引发新问题（制造"信息饥渴"——读者知道了A，就想知道B）
+- 禁止一次性交代完毕，留一半下章揭晓`;
 }

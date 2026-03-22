@@ -271,8 +271,8 @@ inkos agent "Create a progression fantasy about a mage who can only use one spel
 | `inkos book list` | List all books |
 | `inkos book delete <id>` | Delete a book and all its data (`--force` to skip confirmation) |
 | `inkos genre list/show/copy/create` | View, copy, or create genres |
-| `inkos write next [id]` | Full pipeline: write next chapter (`--words` to override, `--count` for batch, `-q` quiet mode) |
-| `inkos write rewrite [id] <n>` | Rewrite chapter N (restores state snapshot, `--force` to skip confirmation) |
+| `inkos write next [id]` | Full pipeline: write next chapter (`--words` to override, `--count` for batch, `--mode signing/premiere`, `-q` quiet mode) |
+| `inkos write rewrite [id] <n>` | Rewrite chapter N (restores state snapshot, `--force` to skip confirmation, `--mode signing/premiere`) |
 | `inkos draft [id]` | Write draft only (`--words` to override word count, `-q` quiet mode) |
 | `inkos audit [id] [n]` | Audit a specific chapter |
 | `inkos revise [id] [n]` | Revise a specific chapter |
@@ -294,6 +294,50 @@ inkos agent "Create a progression fantasy about a mage who can only use one spel
 | `inkos up / down` | Start/stop daemon (`-q` quiet mode, auto-writes `inkos.log`) |
 
 `[id]` is auto-detected when the project has only one book. All commands support `--json` for structured output. `book create` supports `--brief <file>` to pass a creative brief — the Architect builds from your ideas instead of generating from scratch.
+
+## Writing Mode
+
+Two optional writing modes are available for different stages of web novel monetization. **If not set, the original behavior is preserved.**
+
+### signing — Signing Mode
+
+For the pre-signing sprint. The first 10 chapters are the make-or-break for editor review and reader retention. This mode layers on top of existing rules:
+
+- **First 300 chars rule**: every chapter must hook the reader in the first 300 characters — no weather/setting/backstory openers, first sentence must be action or dialogue
+- **Satisfaction density**: at least 2 small payoffs per chapter, 1 medium payoff every 3 chapters, must release tension after 2 consecutive pressure chapters
+- **Chapter-end hooks**: last 200 chars must contain a suspense/reversal/anticipation/emotional hook — no flat endings
+- **Stage goals**: Ch 4-5 first power demonstration, Ch 6-7 introduce a smart antagonist, Ch 8-9 major decision, Ch 10 first big payoff
+
+```bash
+inkos write next --mode signing
+inkos write next --mode signing --count 10
+```
+
+### premiere — Premiere Mode
+
+For the platform's first recommendation push (首秀). The sole goal is maximizing read-through rate:
+
+- **Hook density**: at least one micro-hook every 500 words, no 500+ word stretches of pure narration
+- **Read-through rules**: first 300 chars must have a strong immersion event, no pure transition chapters, 40%+ dialogue ratio, paragraphs ≤ 4 lines
+- **Emotional pacing**: 2-3 emotional turning points per chapter, pressure segments ≤ 500 words followed by release
+- **Information drip**: reveal at least 1 new fact per chapter, each reveal must create a new question
+
+```bash
+inkos write next --mode premiere
+inkos write next --mode premiere --count 3
+```
+
+### Persistent config
+
+Set `writingMode` in `book.json` to avoid passing `--mode` every time:
+
+```json
+{
+  "writingMode": "signing"
+}
+```
+
+CLI `--mode` overrides `book.json`. Omitting `writingMode` or setting `"default"` uses original behavior.
 
 ## Roadmap
 

@@ -1,7 +1,7 @@
 import type { LLMClient, OnStreamProgress } from "../llm/provider.js";
 import { chatCompletion, createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
-import type { BookConfig, FanficMode } from "../models/book.js";
+import type { BookConfig, FanficMode, WritingMode } from "../models/book.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import type { NotifyChannel, LLMConfig, AgentLLMOverride } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
@@ -261,7 +261,7 @@ export class PipelineRunner {
   }
 
   /** Write a single draft chapter. Saves chapter file + truth files + index + snapshot. */
-  async writeDraft(bookId: string, context?: string, wordCount?: number): Promise<DraftResult> {
+  async writeDraft(bookId: string, context?: string, wordCount?: number, writingMode?: WritingMode): Promise<DraftResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
       const book = await this.state.loadBookConfig(bookId);
@@ -277,6 +277,7 @@ export class PipelineRunner {
         chapterNumber,
         externalContext: context ?? this.config.externalContext,
         ...(wordCount ? { wordCountOverride: wordCount } : {}),
+        ...(writingMode ? { writingMode } : {}),
       });
 
       // Save chapter file
@@ -527,16 +528,16 @@ export class PipelineRunner {
   // Full pipeline (convenience — runs draft + audit + revise in one shot)
   // ---------------------------------------------------------------------------
 
-  async writeNextChapter(bookId: string, wordCount?: number, temperatureOverride?: number): Promise<ChapterPipelineResult> {
+  async writeNextChapter(bookId: string, wordCount?: number, temperatureOverride?: number, writingMode?: WritingMode): Promise<ChapterPipelineResult> {
     const releaseLock = await this.state.acquireBookLock(bookId);
     try {
-      return await this._writeNextChapterLocked(bookId, wordCount, temperatureOverride);
+      return await this._writeNextChapterLocked(bookId, wordCount, temperatureOverride, writingMode);
     } finally {
       await releaseLock();
     }
   }
 
-  private async _writeNextChapterLocked(bookId: string, wordCount?: number, temperatureOverride?: number): Promise<ChapterPipelineResult> {
+  private async _writeNextChapterLocked(bookId: string, wordCount?: number, temperatureOverride?: number, writingMode?: WritingMode): Promise<ChapterPipelineResult> {
     const book = await this.state.loadBookConfig(bookId);
     const bookDir = this.state.bookDir(bookId);
     const chapterNumber = await this.state.getNextChapterNumber(bookId);
@@ -551,6 +552,7 @@ export class PipelineRunner {
       externalContext: this.config.externalContext,
       ...(wordCount ? { wordCountOverride: wordCount } : {}),
       ...(temperatureOverride ? { temperatureOverride } : {}),
+      ...(writingMode ? { writingMode } : {}),
     });
 
     // Token usage accumulator

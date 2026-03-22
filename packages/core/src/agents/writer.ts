@@ -1,5 +1,6 @@
 import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
+import type { WritingMode } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt, type FanficContext } from "./writer-prompts.js";
@@ -23,6 +24,7 @@ export interface WriteChapterInput {
   readonly externalContext?: string;
   readonly wordCountOverride?: number;
   readonly temperatureOverride?: number;
+  readonly writingMode?: WritingMode;
 }
 
 export interface TokenUsage {
@@ -108,9 +110,10 @@ export class WriterAgent extends BaseAgent {
 
     // ── Phase 1: Creative writing (temperature 0.7) ──
     const resolvedLanguage = book.language ?? genreProfile.language;
+    const resolvedWritingMode = input.writingMode ?? book.writingMode;
     const creativeSystemPrompt = buildWriterSystemPrompt(
       book, genreProfile, bookRules, bookRulesBody, genreBody, styleGuide, styleFingerprint,
-      chapterNumber, "creative", fanficContext, resolvedLanguage,
+      chapterNumber, "creative", fanficContext, resolvedLanguage, resolvedWritingMode,
     );
 
     // Smart context filtering: inject only relevant parts of truth files

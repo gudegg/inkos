@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.0
+
+写作模式扩展：签约过稿 + 首秀接流。
+
+### 写作模式（Writing Mode）
+
+- 新增 `--mode signing`（签约过稿模式）：前 300 字铁律、爽点密度要求、章末钩子强化、第 4-10 章阶段目标
+- 新增 `--mode premiere`（首秀接流模式）：钩子地狱、完读率铁律、情绪节奏控制、信息投喂节奏
+- `BookConfig` 新增 `writingMode` 可选字段，支持持久化配置
+- CLI `write next` 和 `write rewrite` 新增 `--mode` 选项，覆盖 `book.json` 配置
+- 不设置时完全走原有逻辑，零破坏性
+
 ## v0.5.0
 
 英文原生写作 + 系统稳定性修复。

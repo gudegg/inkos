@@ -259,8 +259,8 @@ inkos agent "先扫描市场趋势，然后根据结果创建一本新书"
 | `inkos book list` | 列出所有书籍 |
 | `inkos book delete <id>` | 删除书籍及全部数据（`--force` 跳过确认） |
 | `inkos genre list/show/copy/create` | 查看、复制、创建题材 |
-| `inkos write next [id]` | 完整管线写下一章（`--words` 覆盖字数，`--count` 连写，`-q` 静默模式） |
-| `inkos write rewrite [id] <n>` | 重写第 N 章（恢复状态快照，`--force` 跳过确认，`--words` 覆盖字数） |
+| `inkos write next [id]` | 完整管线写下一章（`--words` 覆盖字数，`--count` 连写，`--mode signing/premiere` 写作模式，`-q` 静默模式） |
+| `inkos write rewrite [id] <n>` | 重写第 N 章（恢复状态快照，`--force` 跳过确认，`--words` 覆盖字数，`--mode signing/premiere` 写作模式） |
 | `inkos draft [id]` | 只写草稿（`--words` 覆盖字数，`-q` 静默模式） |
 | `inkos audit [id] [n]` | 审计指定章节 |
 | `inkos revise [id] [n]` | 修订指定章节 |
@@ -288,6 +288,50 @@ inkos agent "先扫描市场趋势，然后根据结果创建一本新书"
 | `inkos up / down` | 启动/停止守护进程（`-q` 静默模式，自动写入 `inkos.log`） |
 
 `[id]` 参数在项目只有一本书时可省略，自动检测。所有命令支持 `--json` 输出结构化数据。`draft`/`write next` 支持 `--context` 传入创作指导，`--words` 覆盖每章字数。`book create` 支持 `--brief <file>` 传入创作简报（你的脑洞/设定文档），Architect 会基于此生成设定而非凭空创作。
+
+## 写作模式（Writing Mode）
+
+针对网文变现的不同阶段，提供两种可选写作模式。**不设置时走原有逻辑，不影响任何已有行为。**
+
+### signing — 签约过稿模式
+
+用于新书冲刺签约阶段。前 10 章是编辑审核和读者留存的生死线，该模式在原有规则之上叠加：
+
+- **前 300 字铁律**：每章前 300 字必须抛出让读者"然后呢？"的事件，禁止环境/天气/背景开场，第一句话必须是动作句或对话句
+- **爽点密度要求**：每章至少 2 个小爽点，每 3 章至少 1 个中爽点，连续 2 章压制后必须释放
+- **章末钩子强化**：最后 200 字必须包含悬念/反转/期待/情感钩子，严禁平淡收尾
+- **阶段目标**：第 4-5 章金手指实战、第 6-7 章引入对手、第 8-9 章重大抉择、第 10 章大爽点落地
+
+```bash
+inkos write next --mode signing          # 临时使用
+inkos write next --mode signing --count 10  # 签约期连写 10 章
+```
+
+### premiere — 首秀接流模式
+
+用于平台首次推流期（首秀定级）。唯一目标是最大化完读率，该模式在原有规则之上叠加：
+
+- **钩子地狱**：每 500 字至少一个微钩子，禁止连续 500 字以上纯叙述/描写
+- **完读率铁律**：前 300 字必须有代入感事件，禁止纯过渡章，对话占比不低于 40%，段落不超过 4 行
+- **情绪节奏**：每章至少 2-3 个情绪转折点，虐心段落不超过 500 字必须紧接释放
+- **信息投喂**：每章至少揭示 1 个新信息，新信息必须引发新问题（制造信息饥渴）
+
+```bash
+inkos write next --mode premiere         # 临时使用
+inkos write next --mode premiere --count 3  # 首秀期连写 3 章
+```
+
+### 持久化配置
+
+也可以在 `book.json` 中设置 `writingMode` 字段，这样不需要每次传 `--mode`：
+
+```json
+{
+  "writingMode": "signing"
+}
+```
+
+CLI `--mode` 参数会覆盖 `book.json` 中的配置。不设置 `writingMode` 或设为 `"default"` 时走原有逻辑。
 
 ## 路线图
 

@@ -16,6 +16,7 @@ writeCommand
   .option("--words <n>", "Words per chapter (overrides book config)")
   .option("--context <text>", "Creative guidance (natural language)")
   .option("--context-file <path>", "Read guidance from file")
+  .option("--mode <mode>", "Writing mode: signing (过稿模式) | premiere (首秀模式)")
   .option("--json", "Output JSON")
   .option("-q, --quiet", "Suppress console output")
   .action(async (bookIdArg: string | undefined, opts) => {
@@ -29,12 +30,13 @@ writeCommand
 
       const count = parseInt(opts.count, 10);
       const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
+      const writingMode = opts.mode as "signing" | "premiere" | undefined;
 
       const results = [];
       for (let i = 0; i < count; i++) {
         if (!opts.json) log(`[${i + 1}/${count}] Writing chapter for "${bookId}"...`);
 
-        const result = await pipeline.writeNextChapter(bookId, wordCount);
+        const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, writingMode);
         results.push(result);
 
         if (!opts.json) {
@@ -78,6 +80,7 @@ writeCommand
   .argument("<args...>", "Book ID (optional) and chapter number")
   .option("--force", "Skip confirmation prompt")
   .option("--words <n>", "Words per chapter (overrides book config)")
+  .option("--mode <mode>", "Writing mode: signing (过稿模式) | premiere (首秀模式)")
   .option("--json", "Output JSON")
   .action(async (args: ReadonlyArray<string>, opts) => {
     try {
@@ -150,10 +153,11 @@ writeCommand
       if (!opts.json) log(`Regenerating chapter ${chapter}...`);
 
       const wordCount = opts.words ? parseInt(opts.words, 10) : undefined;
+      const writingMode = opts.mode as "signing" | "premiere" | undefined;
 
       const pipeline = new PipelineRunner(buildPipelineConfig(config, root));
 
-      const result = await pipeline.writeNextChapter(bookId, wordCount);
+      const result = await pipeline.writeNextChapter(bookId, wordCount, undefined, writingMode);
 
       if (opts.json) {
         log(JSON.stringify(result, null, 2));
