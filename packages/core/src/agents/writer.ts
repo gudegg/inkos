@@ -4,11 +4,13 @@ import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt, type FanficContext } from "./writer-prompts.js";
 import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "./settler-prompts.js";
+import { buildObserverSystemPrompt, buildObserverUserPrompt } from "./observer-prompts.js";
 import { parseSettlementOutput } from "./settler-parser.js";
 import { readGenreProfile, readBookRules } from "./rules-reader.js";
 import { validatePostWrite, type PostWriteViolation } from "./post-write-validator.js";
 import { analyzeAITells } from "./ai-tells.js";
 import { filterHooks, filterSummaries, filterSubplots, filterEmotionalArcs, filterCharacterMatrix } from "../utils/context-filter.js";
+import { extractPOVFromOutline, filterMatrixByPOV, filterHooksByPOV } from "../utils/pov-filter.js";
 import { parseCreativeOutput } from "./writer-parser.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -77,6 +79,8 @@ export class WriterAgent extends BaseAgent {
       ]);
 
     const recentChapters = await this.loadRecentChapters(bookDir, chapterNumber);
+    // Load more chapters for dialogue fingerprint extraction (voice consistency over longer span)
+    const fingerprintChapters = await this.loadRecentChapters(bookDir, chapterNumber, 5);
 
     // Load genre profile + book rules
     const { profile: genreProfile, body: genreBody } =
@@ -87,7 +91,7 @@ export class WriterAgent extends BaseAgent {
 
     const styleFingerprint = this.buildStyleFingerprint(styleProfileRaw);
 
-    const dialogueFingerprints = this.extractDialogueFingerprints(recentChapters, storyBible);
+    const dialogueFingerprints = this.extractDialogueFingerprints(fingerprintChapters, storyBible);
     const relevantSummaries = this.findRelevantSummaries(chapterSummaries, volumeOutline, chapterNumber);
 
     const hasParentCanon = parentCanon !== "(文件尚未创建)";
@@ -116,20 +120,29 @@ export class WriterAgent extends BaseAgent {
     const filteredArcs = filterEmotionalArcs(emotionalArcs, chapterNumber);
     const filteredMatrix = filterCharacterMatrix(characterMatrix, volumeOutline, bookRules?.protagonist?.name);
 
+    // POV-aware filtering: limit context to what the POV character knows
+    const povCharacter = extractPOVFromOutline(volumeOutline, chapterNumber);
+    const povFilteredMatrix = povCharacter
+      ? filterMatrixByPOV(filteredMatrix, povCharacter)
+      : filteredMatrix;
+    const povFilteredHooks = povCharacter
+      ? filterHooksByPOV(filteredHooks, povCharacter, chapterSummaries)
+      : filteredHooks;
+
     const creativeUserPrompt = this.buildUserPrompt({
       chapterNumber,
       storyBible,
       volumeOutline,
       currentState,
       ledger: genreProfile.numericalSystem ? ledger : "",
-      hooks: filteredHooks,
+      hooks: povFilteredHooks,
       recentChapters,
       wordCount: input.wordCountOverride ?? book.chapterWordCount,
       externalContext: input.externalContext,
       chapterSummaries: filteredSummaries,
       subplotBoard: filteredSubplots,
       emotionalArcs: filteredArcs,
-      characterMatrix: filteredMatrix,
+      characterMatrix: povFilteredMatrix,
       dialogueFingerprints,
       relevantSummaries,
       parentCanon: hasParentCanon ? parentCanon : undefined,
@@ -245,9 +258,25 @@ export class WriterAgent extends BaseAgent {
     readonly characterMatrix: string;
     readonly volumeOutline: string;
   }): Promise<{ settlement: ReturnType<typeof parseSettlementOutput>; usage: TokenUsage }> {
+    // Phase 2a: Observer — extract all facts from the chapter
+    const resolvedLang = params.book.language ?? params.genreProfile.language;
+    const observerSystem = buildObserverSystemPrompt(params.book, params.genreProfile, resolvedLang);
+    const observerUser = buildObserverUserPrompt(params.chapterNumber, params.title, params.content, resolvedLang);
+
+    this.ctx.logger?.info(`Phase 2a: observing facts for chapter ${params.chapterNumber}`);
+    const observerResponse = await this.chat(
+      [
+        { role: "system", content: observerSystem },
+        { role: "user", content: observerUser },
+      ],
+      { maxTokens: 4096, temperature: 0.5 },
+    );
+    const observations = observerResponse.content;
+
+    // Phase 2b: Reflector — merge observations into truth files
+    this.ctx.logger?.info(`Phase 2b: reflecting observations into truth files`);
     const settlerSystem = buildSettlerSystemPrompt(
-      params.book, params.genreProfile, params.bookRules,
-      params.book.language ?? params.genreProfile.language,
+      params.book, params.genreProfile, params.bookRules, resolvedLang,
     );
 
     const settlerUser = buildSettlerUserPrompt({
@@ -262,6 +291,7 @@ export class WriterAgent extends BaseAgent {
       emotionalArcs: params.emotionalArcs,
       characterMatrix: params.characterMatrix,
       volumeOutline: params.volumeOutline,
+      observations,
     });
 
     // Settler outputs all truth files — scale with content size
@@ -443,6 +473,7 @@ ${params.volumeOutline}
   private async loadRecentChapters(
     bookDir: string,
     currentChapter: number,
+    count = 1,
   ): Promise<string> {
     const chaptersDir = join(bookDir, "chapters");
     try {
@@ -450,7 +481,7 @@ ${params.volumeOutline}
       const mdFiles = files
         .filter((f) => f.endsWith(".md") && !f.startsWith("index"))
         .sort()
-        .slice(-1);
+        .slice(-count);
 
       if (mdFiles.length === 0) return "";
 
@@ -550,9 +581,10 @@ ${params.volumeOutline}
   private extractDialogueFingerprints(recentChapters: string, _storyBible: string): string {
     if (!recentChapters) return "";
 
-    // Match dialogue patterns: "speaker said" or dialogue in quotes
-    // Chinese dialogue typically uses "" or 「」
-    const dialogueRegex = /(?:(.{1,6})(?:说道|道|喝道|冷声道|笑道|怒道|低声道|大声道|喝骂道|冷笑道|沉声道|喊道|叫道|问道|答道)\s*[：:]\s*["""「]([^"""」]+)["""」])|["""「]([^"""」]{2,})["""」]/g;
+    // Match dialogue patterns:
+    // Chinese: "speaker说道：" or dialogue in ""「」
+    // English: "dialogue," speaker said. or "dialogue."
+    const dialogueRegex = /(?:(.{1,6})(?:说道|道|喝道|冷声道|笑道|怒道|低声道|大声道|喝骂道|冷笑道|沉声道|喊道|叫道|问道|答道)\s*[：:]\s*["""「]([^"""」]+)["""」])|["""「]([^"""」]{2,})["""」]|"([^"]{2,})"/g;
 
     const characterDialogues = new Map<string, string[]>();
     let match: RegExpExecArray | null;

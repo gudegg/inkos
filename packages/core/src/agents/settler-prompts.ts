@@ -142,6 +142,7 @@ export function buildSettlerUserPrompt(params: {
   readonly emotionalArcs: string;
   readonly characterMatrix: string;
   readonly volumeOutline: string;
+  readonly observations?: string;
 }): string {
   const ledgerBlock = params.ledger
     ? `\n## 当前资源账本\n${params.ledger}\n`
@@ -163,8 +164,12 @@ export function buildSettlerUserPrompt(params: {
     ? `\n## 当前角色交互矩阵\n${params.characterMatrix}\n`
     : "";
 
-  return `请分析第${params.chapterNumber}章「${params.title}」的正文，更新所有追踪文件。
+  const observationsBlock = params.observations
+    ? `\n## 观察日志（由 Observer 提取，包含本章所有事实变化）\n${params.observations}\n\n基于以上观察日志和正文，更新所有追踪文件。确保观察日志中的每一项变化都反映在对应的文件中。\n`
+    : "";
 
+  return `请分析第${params.chapterNumber}章「${params.title}」的正文，更新所有追踪文件。
+${observationsBlock}
 ## 本章正文
 
 ${params.content}

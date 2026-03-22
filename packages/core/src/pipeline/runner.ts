@@ -10,6 +10,7 @@ import { WriterAgent, type WriteChapterOutput } from "../agents/writer.js";
 import { ChapterAnalyzerAgent } from "../agents/chapter-analyzer.js";
 import { ContinuityAuditor } from "../agents/continuity.js";
 import { ReviserAgent, type ReviseMode } from "../agents/reviser.js";
+import { StateValidatorAgent } from "../agents/state-validator.js";
 import { RadarAgent } from "../agents/radar.js";
 import type { RadarSource } from "../agents/radar-source.js";
 import { readGenreProfile } from "../agents/rules-reader.js";
@@ -671,6 +672,31 @@ export class PipelineRunner {
     );
     finalWordCount = persistenceOutput.wordCount;
     const pipelineLang = book.language ?? gp.language;
+
+    // 4.1 Validate settler output before writing (non-blocking)
+    try {
+      const storyDir = join(bookDir, "story");
+      const [oldState, oldHooks] = await Promise.all([
+        readFile(join(storyDir, "current_state.md"), "utf-8").catch(() => ""),
+        readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
+      ]);
+      const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
+      const validation = await validator.validate(
+        finalContent, chapterNumber,
+        oldState, persistenceOutput.updatedState,
+        oldHooks, persistenceOutput.updatedHooks,
+        pipelineLang,
+      );
+      if (validation.warnings.length > 0) {
+        this.config.logger?.warn(`State validation: ${validation.warnings.length} warning(s) for chapter ${chapterNumber}`);
+        for (const w of validation.warnings) {
+          this.config.logger?.warn(`  [${w.category}] ${w.description}`);
+        }
+      }
+    } catch (e) {
+      this.config.logger?.warn(`State validation skipped: ${e}`);
+    }
+
     await writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, pipelineLang);
     await writer.saveNewTruthFiles(bookDir, persistenceOutput);
 
