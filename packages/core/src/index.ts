@@ -46,6 +46,7 @@ export { splitChapters, type SplitChapter } from "./utils/chapter-splitter.js";
 export { createLogger, createStderrSink, createJsonLineSink, nullSink, type Logger, type LogSink, type LogLevel, type LogEntry } from "./utils/logger.js";
 export { loadProjectConfig, GLOBAL_CONFIG_DIR, GLOBAL_ENV_PATH } from "./utils/config-loader.js";
 export { computeAnalytics, type AnalyticsData, type TokenStats } from "./utils/analytics.js";
+export { stripMarkdown, numberToChinese, formatFanqieParagraphs } from "./utils/text-format.js";
 
 // Pipeline
 export { PipelineRunner, type PipelineConfig, type ChapterPipelineResult, type DraftResult, type ReviseResult, type TruthFiles, type BookStatusInfo, type ImportChaptersInput, type ImportChaptersResult, type TokenUsageSummary } from "./pipeline/runner.js";

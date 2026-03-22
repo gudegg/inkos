@@ -1,15 +1,16 @@
 import { Command } from "commander";
 import { StateManager } from "@actalk/inkos-core";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { findProjectRoot, resolveBookId, log, logError } from "../utils.js";
 
 export const exportCommand = new Command("export")
   .description("Export book chapters to a single file")
   .argument("[book-id]", "Book ID (auto-detected if only one book)")
-  .option("--format <format>", "Output format (txt, md, epub)", "txt")
+  .option("--format <format>", "Output format (txt, md, epub, fanqie)", "txt")
   .option("--output <path>", "Output file path")
   .option("--approved-only", "Only export approved chapters")
+  .option("--split", "Split chapters into separate files (fanqie format only)")
   .option("--json", "Output JSON metadata")
   .action(async (bookIdArg: string | undefined, opts) => {
     try {
@@ -33,6 +34,15 @@ export const exportCommand = new Command("export")
       if (opts.format === "epub") {
         await exportEpub(book, chapters, chaptersDir, bookId, root, opts);
         return;
+      }
+
+      if (opts.format === "fanqie") {
+        await exportFanqie(book, chapters, chaptersDir, bookId, root, opts);
+        return;
+      }
+
+      if (opts.split) {
+        throw new Error("--split flag is only supported with --format fanqie");
       }
 
       const parts: string[] = [];
@@ -133,4 +143,110 @@ async function exportEpub(
     log(`Exported ${chapters.length} chapters (${totalWords} words) to EPUB`);
     log(`Output: ${outputPath}`);
   }
+}
+
+async function exportFanqie(
+  book: { readonly title: string },
+  chapters: ReadonlyArray<{ readonly number: number; readonly wordCount: number }>,
+  chaptersDir: string,
+  bookId: string,
+  root: string,
+  opts: { readonly output?: string; readonly split?: boolean; readonly json?: boolean },
+): Promise<void> {
+  const { stripMarkdown, numberToChinese, formatFanqieParagraphs } =
+    await import("@actalk/inkos-core");
+
+  const totalWords = chapters.reduce((sum, ch) => sum + ch.wordCount, 0);
+
+  if (opts.split) {
+    // Multi-file mode: each chapter as a separate .txt file
+    const outputDir = opts.output ?? join(root, `${bookId}_fanqie`);
+    await mkdir(outputDir, { recursive: true });
+
+    for (const ch of chapters) {
+      const paddedNum = String(ch.number).padStart(4, "0");
+      const files = await readdir(chaptersDir);
+      const match = files.find((f) => f.startsWith(paddedNum));
+      if (!match) continue;
+
+      const markdown = await readFile(join(chaptersDir, match), "utf-8");
+      const { title, body } = extractChapterParts(markdown, ch.number);
+
+      const chineseNum = numberToChinese(ch.number);
+      const header = `第${chineseNum}章 ${title}`;
+      const plainText = stripMarkdown(body);
+      const formattedBody = formatFanqieParagraphs(plainText);
+
+      const chapterContent = `${header}\n\n${formattedBody}`;
+      const sanitizedTitle = title
+        .replace(/[/\\?%*:|"<>]/g, "")
+        .replace(/\s+/g, "_")
+        .slice(0, 50);
+      const chapterFile = join(outputDir, `${paddedNum}_${sanitizedTitle}.txt`);
+      await writeFile(chapterFile, chapterContent, "utf-8");
+    }
+
+    if (opts.json) {
+      log(JSON.stringify({
+        bookId,
+        chaptersExported: chapters.length,
+        totalWords,
+        format: "fanqie",
+        split: true,
+        outputPath: outputDir,
+      }, null, 2));
+    } else {
+      log(`Exported ${chapters.length} chapters (${totalWords} words) to fanqie format`);
+      log(`Output directory: ${outputDir}`);
+    }
+  } else {
+    // Single file mode: all chapters in one .txt
+    const parts: string[] = [book.title, "\n\n"];
+
+    for (const ch of chapters) {
+      const paddedNum = String(ch.number).padStart(4, "0");
+      const files = await readdir(chaptersDir);
+      const match = files.find((f) => f.startsWith(paddedNum));
+      if (!match) continue;
+
+      const markdown = await readFile(join(chaptersDir, match), "utf-8");
+      const { title, body } = extractChapterParts(markdown, ch.number);
+
+      const chineseNum = numberToChinese(ch.number);
+      const header = `第${chineseNum}章 ${title}`;
+      const plainText = stripMarkdown(body);
+      const formattedBody = formatFanqieParagraphs(plainText);
+
+      parts.push(header, "\n\n", formattedBody, "\n\n");
+    }
+
+    const outputPath = opts.output ?? join(root, `${bookId}_fanqie.txt`);
+    await writeFile(outputPath, parts.join(""), "utf-8");
+
+    if (opts.json) {
+      log(JSON.stringify({
+        bookId,
+        chaptersExported: chapters.length,
+        totalWords,
+        format: "fanqie",
+        split: false,
+        outputPath,
+      }, null, 2));
+    } else {
+      log(`Exported ${chapters.length} chapters (${totalWords} words) to fanqie format`);
+      log(`Output: ${outputPath}`);
+    }
+  }
+}
+
+/** Extract title and body from a chapter markdown file. */
+function extractChapterParts(
+  markdown: string,
+  chapterNumber: number,
+): { title: string; body: string } {
+  // Chapter heading format: # 第X章 标题 (see runner.ts:293)
+  const titleMatch = markdown.match(/^#\s+(?:第\d+章\s+)?(.+)/m);
+  const title = titleMatch?.[1]?.trim() ?? `第${chapterNumber}章`;
+  const body = markdown.replace(/^#\s+.+\n*/m, "");
+  return { title, body };
 }

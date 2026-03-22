@@ -106,6 +106,8 @@ inkos review list 吞天魔帝     # 审阅草稿
 inkos review approve-all 吞天魔帝  # 批量通过
 inkos export 吞天魔帝          # 导出全书
 inkos export 吞天魔帝 --format epub  # 导出 EPUB（手机/Kindle 阅读）
+inkos export 吞天魔帝 --format fanqie  # 导出番茄小说格式（纯文本、中文章节号、段首缩进）
+inkos export 吞天魔帝 --format fanqie --split  # 每章独立文件，方便上传番茄后台
 ```
 
 <p align="center">
@@ -268,7 +270,7 @@ inkos agent "先扫描市场趋势，然后根据结果创建一本新书"
 | `inkos review list [id]` | 审阅草稿 |
 | `inkos review approve-all [id]` | 批量通过 |
 | `inkos status [id]` | 项目状态 |
-| `inkos export [id]` | 导出书籍（`--format txt/md/epub`、`--output <path>`、`--approved-only`） |
+| `inkos export [id]` | 导出书籍（`--format txt/md/epub/fanqie`、`--output <path>`、`--approved-only`、`--split`） |
 | `inkos radar scan` | 扫描平台趋势 |
 | `inkos fanfic init` | 从原作素材创建同人书（`--from`、`--mode canon/au/ooc/cp`） |
 | `inkos config set-global` | 设置全局 LLM 配置（~/.inkos/.env） |
@@ -338,7 +340,8 @@ CLI `--mode` 参数会覆盖 `book.json` 中的配置。不设置 `writingMode` 
 - [ ] `packages/studio` Web UI 审阅编辑界面（Vite + React + Hono）
 - [ ] 局部干预（重写半章 + 级联更新后续 truth 文件）
 - [ ] 自定义 agent 插件系统
-- [ ] 平台格式导出（起点、番茄等）
+- [x] 平台格式导出（番茄小说：`--format fanqie`，支持 `--split` 多文件模式）
+- [ ] 平台格式导出（起点等）
 
 ## 参与贡献
 
