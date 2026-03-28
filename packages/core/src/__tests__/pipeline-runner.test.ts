@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PipelineRunner } from "../pipeline/runner.js";
@@ -322,6 +322,154 @@ describe("PipelineRunner", () => {
       .resolves.toContain("final analyzed emotions");
     await expect(readFile(join(storyDir, "character_matrix.md"), "utf-8"))
       .resolves.toContain("final analyzed matrix");
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("fails the pipeline when spot-fix leaves the chapter outside the target length range", async () => {
+    const { root, runner, bookId } = await createRunnerFixture();
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        content: "Original draft body.",
+        wordCount: "Original draft body.".length,
+        postWriteErrors: [
+          {
+            severity: "error",
+            rule: "章节字数",
+            description: "正文超长",
+            suggestion: "压缩正文",
+          },
+        ],
+      }),
+    );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: "正".repeat(6128),
+        wordCount: 6128,
+      }),
+    );
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+    vi.spyOn(WriterAgent.prototype, "saveChapter").mockResolvedValue(undefined);
+    vi.spyOn(WriterAgent.prototype, "saveNewTruthFiles").mockResolvedValue(undefined);
+    vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(
+      createAnalyzedOutput({
+        content: "正".repeat(6128),
+        wordCount: 6128,
+      }),
+    );
+
+    const result = await runner.writeNextChapter(bookId, 4500);
+
+    expect(result.status).toBe("audit-failed");
+    expect(result.auditResult.passed).toBe(false);
+    expect(result.auditResult.issues.some(
+      (issue) => issue.category === "章节字数" && issue.description.includes("当前约6128字"),
+    )).toBe(true);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("rejects drafts that still violate target length after deterministic spot-fix", async () => {
+    const { root, runner, bookId } = await createRunnerFixture();
+
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(
+      createWriterOutput({
+        content: "Original draft body.",
+        wordCount: "Original draft body.".length,
+        postWriteErrors: [
+          {
+            severity: "error",
+            rule: "章节字数",
+            description: "正文超长",
+            suggestion: "压缩正文",
+          },
+        ],
+      }),
+    );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: "正".repeat(6128),
+        wordCount: 6128,
+      }),
+    );
+
+    await expect(runner.writeDraft(bookId, undefined, 4500))
+      .rejects.toThrow(/Draft still violates deterministic rules/);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("audits chapter length against the chapter-specific target word count", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const chapterContent = "正".repeat(6128);
+    const chapterPath = join(state.bookDir(bookId), "chapters", "0001_Test_Chapter.md");
+    await writeFile(chapterPath, `# 第1章 Test Chapter\n\n${chapterContent}`, "utf-8");
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "drafted",
+      wordCount: 6128,
+      targetWordCount: 4500,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+    }]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+
+    const result = await runner.auditDraft(bookId, 1);
+
+    expect(result.passed).toBe(false);
+    expect(result.issues.some(
+      (issue) => issue.category === "章节字数" && issue.description.includes("目标4500字"),
+    )).toBe(true);
+
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("rejects revisions that still violate the chapter-specific target word count", async () => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const chapterContent = "正".repeat(6128);
+    const chapterPath = join(state.bookDir(bookId), "chapters", "0001_Test_Chapter.md");
+    await writeFile(chapterPath, `# 第1章 Test Chapter\n\n${chapterContent}`, "utf-8");
+    await state.saveChapterIndex(bookId, [{
+      number: 1,
+      title: "Test Chapter",
+      status: "audit-failed",
+      wordCount: 6128,
+      targetWordCount: 4500,
+      createdAt: "2026-03-19T00:00:00.000Z",
+      updatedAt: "2026-03-19T00:00:00.000Z",
+      auditIssues: [],
+    }]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(
+      createAuditResult({
+        passed: true,
+        issues: [],
+        summary: "clean",
+      }),
+    );
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
+      createReviseOutput({
+        revisedContent: "正".repeat(6128),
+        wordCount: 6128,
+      }),
+    );
+
+    await expect(runner.reviseDraft(bookId, 1, "spot-fix"))
+      .rejects.toThrow(/Revision still violates deterministic rules/);
 
     await rm(root, { recursive: true, force: true });
   });

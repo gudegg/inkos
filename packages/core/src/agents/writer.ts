@@ -59,6 +59,10 @@ export class WriterAgent extends BaseAgent {
 
   async writeChapter(input: WriteChapterInput): Promise<WriteChapterOutput> {
     const { book, bookDir, chapterNumber } = input;
+    const targetWords = input.wordCountOverride ?? book.chapterWordCount;
+    const promptBook = targetWords === book.chapterWordCount
+      ? book
+      : { ...book, chapterWordCount: targetWords };
 
     const [
       storyBible, volumeOutline, styleGuide, currentState, ledger, hooks,
@@ -112,7 +116,7 @@ export class WriterAgent extends BaseAgent {
     const resolvedLanguage = book.language ?? genreProfile.language;
     const resolvedWritingMode = input.writingMode ?? book.writingMode;
     const creativeSystemPrompt = buildWriterSystemPrompt(
-      book, genreProfile, bookRules, bookRulesBody, genreBody, styleGuide, styleFingerprint,
+      promptBook, genreProfile, bookRules, bookRulesBody, genreBody, styleGuide, styleFingerprint,
       chapterNumber, "creative", fanficContext, resolvedLanguage, resolvedWritingMode,
     );
 
@@ -140,7 +144,7 @@ export class WriterAgent extends BaseAgent {
       ledger: genreProfile.numericalSystem ? ledger : "",
       hooks: povFilteredHooks,
       recentChapters,
-      wordCount: input.wordCountOverride ?? book.chapterWordCount,
+      wordCount: targetWords,
       externalContext: input.externalContext,
       chapterSummaries: filteredSummaries,
       subplotBoard: filteredSubplots,
@@ -157,7 +161,6 @@ export class WriterAgent extends BaseAgent {
     this.ctx.logger?.info(`Phase 1: creative writing for chapter ${chapterNumber}`);
 
     // Scale maxTokens to chapter word count (Chinese ≈ 1.5 tokens/char)
-    const targetWords = input.wordCountOverride ?? book.chapterWordCount;
     const creativeMaxTokens = Math.max(8192, Math.ceil(targetWords * 2));
 
     const creativeResponse = await this.chat(
@@ -194,8 +197,7 @@ export class WriterAgent extends BaseAgent {
     const settleUsage = settleResult.usage;
 
     // ── Post-write validation (regex + rule-based, zero LLM cost) ──
-    const targetWordCount = input.wordCountOverride ?? book.chapterWordCount;
-    const ruleViolations = validatePostWrite(creative.content, genreProfile, bookRules, targetWordCount);
+    const ruleViolations = validatePostWrite(creative.content, genreProfile, bookRules, targetWords);
     const aiTellIssues = analyzeAITells(creative.content).issues;
 
     const postWriteErrors = ruleViolations.filter(v => v.severity === "error");
@@ -491,7 +493,9 @@ ${params.volumeOutline}
       const contents = await Promise.all(
         mdFiles.map(async (f) => {
           const content = await readFile(join(chaptersDir, f), "utf-8");
-          return content;
+          // Strip the chapter heading before injecting recent chapters into the prompt.
+          // Otherwise the model overfits to the last few title shells and repeats them.
+          return content.replace(/^#\s+.*(?:\r?\n){1,2}/, "");
         }),
       );
 
