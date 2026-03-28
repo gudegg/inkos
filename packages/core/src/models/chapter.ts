@@ -21,6 +21,7 @@ export const ChapterMetaSchema = z.object({
   title: z.string(),
   status: ChapterStatusSchema,
   wordCount: z.number().int().default(0),
+  targetWordCount: z.number().int().min(1000).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
   auditIssues: z.array(z.string()).default([]),

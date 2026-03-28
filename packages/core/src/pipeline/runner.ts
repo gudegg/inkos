@@ -2,6 +2,7 @@ import type { LLMClient, OnStreamProgress } from "../llm/provider.js";
 import { chatCompletion, createLLMClient } from "../llm/provider.js";
 import type { Logger } from "../utils/logger.js";
 import type { BookConfig, FanficMode, WritingMode } from "../models/book.js";
+import type { BookRules } from "../models/book-rules.js";
 import type { ChapterMeta } from "../models/chapter.js";
 import type { NotifyChannel, LLMConfig, AgentLLMOverride } from "../models/project.js";
 import type { GenreProfile } from "../models/genre-profile.js";
@@ -13,7 +14,8 @@ import { ReviserAgent, type ReviseMode } from "../agents/reviser.js";
 import { StateValidatorAgent } from "../agents/state-validator.js";
 import { RadarAgent } from "../agents/radar.js";
 import type { RadarSource } from "../agents/radar-source.js";
-import { readGenreProfile } from "../agents/rules-reader.js";
+import { validatePostWrite } from "../agents/post-write-validator.js";
+import { readGenreProfile, readBookRules } from "../agents/rules-reader.js";
 import { analyzeAITells } from "../agents/ai-tells.js";
 import { analyzeSensitiveWords } from "../agents/sensitive-words.js";
 import { StateManager } from "../state/manager.js";
@@ -267,8 +269,10 @@ export class PipelineRunner {
       const book = await this.state.loadBookConfig(bookId);
       const bookDir = this.state.bookDir(bookId);
       const chapterNumber = await this.state.getNextChapterNumber(bookId);
+      const targetWordCount = wordCount ?? book.chapterWordCount;
 
       const { profile: gp } = await this.loadGenreProfile(book.genre);
+      const parsedBookRules = await readBookRules(bookDir);
 
       const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
       const output = await writer.writeChapter({
@@ -279,36 +283,83 @@ export class PipelineRunner {
         ...(wordCount ? { wordCountOverride: wordCount } : {}),
         ...(writingMode ? { writingMode } : {}),
       });
+      let totalUsage: TokenUsageSummary = output.tokenUsage ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+      let finalContent = output.content;
+
+      if (output.postWriteErrors.length > 0) {
+        const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
+        const fixResult = await reviser.reviseChapter(
+          bookDir,
+          finalContent,
+          chapterNumber,
+          output.postWriteErrors.map((issue) => ({
+            severity: "critical" as const,
+            category: issue.rule,
+            description: issue.description,
+            suggestion: issue.suggestion,
+          })),
+          "spot-fix",
+          book.genre,
+          targetWordCount,
+        );
+        totalUsage = PipelineRunner.addUsage(totalUsage, fixResult.tokenUsage);
+        if (fixResult.revisedContent.length > 0) {
+          finalContent = fixResult.revisedContent;
+        }
+      }
+
+      const remainingPostWriteIssues = this.buildPostWriteAuditIssues(
+        finalContent,
+        gp,
+        parsedBookRules?.rules ?? null,
+        targetWordCount,
+      );
+      const remainingCriticalIssues = remainingPostWriteIssues.filter((issue) => issue.severity === "critical");
+      if (remainingCriticalIssues.length > 0) {
+        throw new Error(
+          `Draft still violates deterministic rules: ${remainingCriticalIssues.map((issue) => `${issue.category}: ${issue.description}`).join("; ")}`,
+        );
+      }
+
+      const persistenceOutput = await this.buildPersistenceOutput(
+        bookId,
+        book,
+        bookDir,
+        chapterNumber,
+        { ...output, tokenUsage: totalUsage },
+        finalContent,
+      );
 
       // Save chapter file
       const chaptersDir = join(bookDir, "chapters");
       const paddedNum = String(chapterNumber).padStart(4, "0");
-      const sanitized = output.title.replace(/[/\\?%*:|"<>]/g, "").replace(/\s+/g, "_").slice(0, 50);
+      const sanitized = persistenceOutput.title.replace(/[/\\?%*:|"<>]/g, "").replace(/\s+/g, "_").slice(0, 50);
       const filename = `${paddedNum}_${sanitized}.md`;
       const filePath = join(chaptersDir, filename);
 
       const resolvedLang = book.language ?? gp.language;
       const heading = resolvedLang === "en"
-        ? `# Chapter ${chapterNumber}: ${output.title}`
-        : `# 第${chapterNumber}章 ${output.title}`;
-      await writeFile(filePath, `${heading}\n\n${output.content}`, "utf-8");
+        ? `# Chapter ${chapterNumber}: ${persistenceOutput.title}`
+        : `# 第${chapterNumber}章 ${persistenceOutput.title}`;
+      await writeFile(filePath, `${heading}\n\n${persistenceOutput.content}`, "utf-8");
 
       // Save truth files
-      await writer.saveChapter(bookDir, output, gp.numericalSystem, resolvedLang);
-      await writer.saveNewTruthFiles(bookDir, output);
+      await writer.saveChapter(bookDir, persistenceOutput, gp.numericalSystem, resolvedLang);
+      await writer.saveNewTruthFiles(bookDir, persistenceOutput);
 
       // Update index
       const existingIndex = await this.state.loadChapterIndex(bookId);
       const now = new Date().toISOString();
       const newEntry: ChapterMeta = {
         number: chapterNumber,
-        title: output.title,
+        title: persistenceOutput.title,
         status: "drafted",
-        wordCount: output.wordCount,
+        wordCount: persistenceOutput.wordCount,
+        targetWordCount,
         createdAt: now,
         updatedAt: now,
         auditIssues: [],
-        ...(output.tokenUsage ? { tokenUsage: output.tokenUsage } : {}),
+        ...(totalUsage.totalTokens > 0 ? { tokenUsage: totalUsage } : {}),
       };
       await this.state.saveChapterIndex(bookId, [...existingIndex, newEntry]);
 
@@ -316,11 +367,17 @@ export class PipelineRunner {
       await this.state.snapshotState(bookId, chapterNumber);
 
       await this.emitWebhook("chapter-complete", bookId, chapterNumber, {
-        title: output.title,
-        wordCount: output.wordCount,
+        title: persistenceOutput.title,
+        wordCount: persistenceOutput.wordCount,
       });
 
-      return { chapterNumber, title: output.title, wordCount: output.wordCount, filePath, tokenUsage: output.tokenUsage };
+      return {
+        chapterNumber,
+        title: persistenceOutput.title,
+        wordCount: persistenceOutput.wordCount,
+        filePath,
+        ...(totalUsage.totalTokens > 0 ? { tokenUsage: totalUsage } : {}),
+      };
     } finally {
       await releaseLock();
     }
@@ -336,27 +393,40 @@ export class PipelineRunner {
     }
 
     const content = await this.readChapterContent(bookDir, targetChapter);
+    const index = await this.state.loadChapterIndex(bookId);
+    const chapterMeta = index.find((ch) => ch.number === targetChapter);
+    const targetWordCount = this.resolveTargetWordCount(book, chapterMeta);
+    const { profile: gp } = await this.loadGenreProfile(book.genre);
+    const parsedBookRules = await readBookRules(bookDir);
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
     const llmResult = await auditor.auditChapter(bookDir, content, targetChapter, book.genre);
 
+    const postWriteIssues = this.buildPostWriteAuditIssues(
+      content,
+      gp,
+      parsedBookRules?.rules ?? null,
+      targetWordCount,
+    );
     // Merge rule-based AI-tell detection
     const aiTells = analyzeAITells(content);
     // Merge sensitive word detection
     const sensitiveResult = analyzeSensitiveWords(content);
     const hasBlockedWords = sensitiveResult.found.some((f) => f.severity === "block");
     const mergedIssues: ReadonlyArray<AuditIssue> = [
+      ...postWriteIssues,
       ...llmResult.issues,
       ...aiTells.issues,
       ...sensitiveResult.issues,
     ];
     const result: AuditResult = {
-      passed: hasBlockedWords ? false : llmResult.passed,
+      passed: hasBlockedWords
+        ? false
+        : llmResult.passed && !postWriteIssues.some((issue) => issue.severity === "critical"),
       issues: mergedIssues,
       summary: llmResult.summary,
     };
 
     // Update index with audit result
-    const index = await this.state.loadChapterIndex(bookId);
     const updated = index.map((ch) =>
       ch.number === targetChapter
         ? {
@@ -399,23 +469,49 @@ export class PipelineRunner {
 
       // Re-audit to get structured issues (index only stores strings)
       const content = await this.readChapterContent(bookDir, targetChapter);
+      const targetWordCount = this.resolveTargetWordCount(book, chapterMeta);
+      const { profile: gp } = await this.loadGenreProfile(book.genre);
+      const parsedBookRules = await readBookRules(bookDir);
       const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
-      const auditResult = await auditor.auditChapter(bookDir, content, targetChapter, book.genre);
+      const llmAuditResult = await auditor.auditChapter(bookDir, content, targetChapter, book.genre);
+      const postWriteIssues = this.buildPostWriteAuditIssues(
+        content,
+        gp,
+        parsedBookRules?.rules ?? null,
+        targetWordCount,
+      );
+      const auditIssues = [...postWriteIssues, ...llmAuditResult.issues];
+      const auditResult: AuditResult = {
+        passed: llmAuditResult.passed && !postWriteIssues.some((issue) => issue.severity === "critical"),
+        issues: auditIssues,
+        summary: llmAuditResult.summary,
+      };
 
       if (auditResult.passed && auditResult.issues.filter(i => i.severity === "warning" || i.severity === "critical").length === 0) {
         return { chapterNumber: targetChapter, wordCount: content.length, fixedIssues: [] };
       }
 
-      const { profile: gp } = await this.loadGenreProfile(book.genre);
-
       const reviser = new ReviserAgent(this.agentCtxFor("reviser", bookId));
       const reviseOutput = await reviser.reviseChapter(
         bookDir, content, targetChapter, auditResult.issues, mode, book.genre,
-        book.chapterWordCount,
+        targetWordCount,
       );
 
       if (reviseOutput.revisedContent.length === 0) {
         throw new Error("Reviser returned empty content");
+      }
+
+      const remainingPostWriteIssues = this.buildPostWriteAuditIssues(
+        reviseOutput.revisedContent,
+        gp,
+        parsedBookRules?.rules ?? null,
+        targetWordCount,
+      );
+      const remainingCriticalIssues = remainingPostWriteIssues.filter((issue) => issue.severity === "critical");
+      if (remainingCriticalIssues.length > 0) {
+        throw new Error(
+          `Revision still violates deterministic rules: ${remainingCriticalIssues.map((issue) => `${issue.category}: ${issue.description}`).join("; ")}`,
+        );
       }
 
       // Save revised chapter file
@@ -542,6 +638,8 @@ export class PipelineRunner {
     const bookDir = this.state.bookDir(bookId);
     const chapterNumber = await this.state.getNextChapterNumber(bookId);
     const { profile: gp } = await this.loadGenreProfile(book.genre);
+    const parsedBookRules = await readBookRules(bookDir);
+    const targetWordCount = wordCount ?? book.chapterWordCount;
 
     // 1. Write chapter
     const writer = new WriterAgent(this.agentCtxFor("writer", bookId));
@@ -581,7 +679,7 @@ export class PipelineRunner {
         spotFixIssues,
         "spot-fix",
         book.genre,
-        wordCount ?? book.chapterWordCount,
+        targetWordCount,
       );
       totalUsage = PipelineRunner.addUsage(totalUsage, fixResult.tokenUsage);
       if (fixResult.revisedContent.length > 0) {
@@ -590,6 +688,13 @@ export class PipelineRunner {
         revised = true;
       }
     }
+
+    let postWriteIssues = this.buildPostWriteAuditIssues(
+      finalContent,
+      gp,
+      parsedBookRules?.rules ?? null,
+      targetWordCount,
+    );
 
     // 2b. LLM audit
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
@@ -604,8 +709,10 @@ export class PipelineRunner {
     const sensitiveWriteResult = analyzeSensitiveWords(finalContent);
     const hasBlockedWriteWords = sensitiveWriteResult.found.some((f) => f.severity === "block");
     let auditResult: AuditResult = {
-      passed: hasBlockedWriteWords ? false : llmAudit.passed,
-      issues: [...llmAudit.issues, ...aiTellsResult.issues, ...sensitiveWriteResult.issues],
+      passed: hasBlockedWriteWords
+        ? false
+        : llmAudit.passed && !postWriteIssues.some((issue) => issue.severity === "critical"),
+      issues: [...postWriteIssues, ...llmAudit.issues, ...aiTellsResult.issues, ...sensitiveWriteResult.issues],
       summary: llmAudit.summary,
     };
 
@@ -623,7 +730,7 @@ export class PipelineRunner {
           auditResult.issues,
           "spot-fix",
           book.genre,
-          wordCount ?? book.chapterWordCount,
+          targetWordCount,
         );
         totalUsage = PipelineRunner.addUsage(totalUsage, reviseOutput.tokenUsage);
 
@@ -651,12 +758,20 @@ export class PipelineRunner {
             { temperature: 0 },
           );
           totalUsage = PipelineRunner.addUsage(totalUsage, reAudit.tokenUsage);
+          postWriteIssues = this.buildPostWriteAuditIssues(
+            finalContent,
+            gp,
+            parsedBookRules?.rules ?? null,
+            targetWordCount,
+          );
           const reAITells = analyzeAITells(finalContent);
           const reSensitive = analyzeSensitiveWords(finalContent);
           const reHasBlocked = reSensitive.found.some((f) => f.severity === "block");
           auditResult = {
-            passed: reHasBlocked ? false : reAudit.passed,
-            issues: [...reAudit.issues, ...reAITells.issues, ...reSensitive.issues],
+            passed: reHasBlocked
+              ? false
+              : reAudit.passed && !postWriteIssues.some((issue) => issue.severity === "critical"),
+            issues: [...postWriteIssues, ...reAudit.issues, ...reAITells.issues, ...reSensitive.issues],
             summary: reAudit.summary,
           };
         }
@@ -710,6 +825,7 @@ export class PipelineRunner {
       title: persistenceOutput.title,
       status: auditResult.passed ? "ready-for-review" : "audit-failed",
       wordCount: finalWordCount,
+      targetWordCount,
       createdAt: now,
       updatedAt: now,
       auditIssues: auditResult.issues.map(
@@ -1068,6 +1184,7 @@ ${matrix}`,
           title: output.title,
           status: "imported",
           wordCount: ch.content.length,
+          targetWordCount: book.chapterWordCount,
           createdAt: now,
           updatedAt: now,
           auditIssues: [],
@@ -1110,6 +1227,24 @@ ${matrix}`,
       completionTokens: a.completionTokens + b.completionTokens,
       totalTokens: a.totalTokens + b.totalTokens,
     };
+  }
+
+  private buildPostWriteAuditIssues(
+    content: string,
+    genreProfile: GenreProfile,
+    bookRules: BookRules | null,
+    targetWordCount: number,
+  ): ReadonlyArray<AuditIssue> {
+    return validatePostWrite(content, genreProfile, bookRules, targetWordCount).map((issue) => ({
+      severity: issue.severity === "error" ? "critical" : "warning",
+      category: issue.rule,
+      description: issue.description,
+      suggestion: issue.suggestion,
+    }));
+  }
+
+  private resolveTargetWordCount(book: BookConfig, chapterMeta?: ChapterMeta): number {
+    return chapterMeta?.targetWordCount ?? book.chapterWordCount;
   }
 
   private async buildPersistenceOutput(

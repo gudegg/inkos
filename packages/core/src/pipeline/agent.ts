@@ -13,6 +13,8 @@ const TOOLS: ReadonlyArray<ToolDefinition> = [
       properties: {
         bookId: { type: "string", description: "书籍ID" },
         guidance: { type: "string", description: "本章创作指导（可选，自然语言）" },
+        words: { type: "number", description: "目标字数（可选，覆盖书籍默认每章字数）" },
+        mode: { type: "string", enum: ["signing", "premiere"], description: "写作模式（可选）" },
       },
       required: ["bookId"],
     },
@@ -102,6 +104,8 @@ const TOOLS: ReadonlyArray<ToolDefinition> = [
       properties: {
         bookId: { type: "string", description: "书籍ID" },
         count: { type: "number", description: "连续写几章（默认1）" },
+        words: { type: "number", description: "目标字数（可选，覆盖书籍默认每章字数）" },
+        mode: { type: "string", enum: ["signing", "premiere"], description: "写作模式（可选）" },
       },
       required: ["bookId"],
     },
@@ -291,6 +295,8 @@ async function executeTool(
       const result = await pipeline.writeDraft(
         args.bookId as string,
         args.guidance as string | undefined,
+        args.words as number | undefined,
+        args.mode as "signing" | "premiere" | undefined,
       );
       return JSON.stringify(result);
     }
@@ -375,9 +381,11 @@ async function executeTool(
 
     case "write_full_pipeline": {
       const count = (args.count as number) ?? 1;
+      const wordCount = args.words as number | undefined;
+      const writingMode = args.mode as "signing" | "premiere" | undefined;
       const results = [];
       for (let i = 0; i < count; i++) {
-        const result = await pipeline.writeNextChapter(args.bookId as string);
+        const result = await pipeline.writeNextChapter(args.bookId as string, wordCount, undefined, writingMode);
         results.push(result);
       }
       return JSON.stringify(results);
